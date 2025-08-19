@@ -1,0 +1,26 @@
+date: date
+amount: revenue
+cost: cost
+margin: margin
+quantity: quantity
+category: category
+subcategory: product
+region: region
+
+kpis:
+  - id: total_revenue
+    label: Total Revenue
+    formula: df['revenue'].sum()
+  - id: avg_order_value
+    label: Avg Order Value
+    formula: df['revenue'].mean()
+  - id: gross_margin_pct
+    label: Gross Margin %
+    formula: (df['margin'].sum() / df['revenue'].sum()) * 100
+
+charts:
+  time_series:
+    metric: revenue
+  breakdown:
+    by: category
+    value: revenue

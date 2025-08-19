@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+luminaiq.db
+uploads/
+.DS_Store
