@@ -1,8 +1,14 @@
-\
-import os, io, yaml
 import pandas as pd
-import plotly.express as px
 import streamlit as st
+from db import list_uploads_for_user
+import os, yaml
+
+# Try Plotly, fall back to Streamlit charts if not available
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except Exception:
+    HAS_PLOTLY = False
 
 st.set_page_config(page_title="Client Template • LuminaIQ", page_icon="🧩", layout="wide")
 user = st.session_state.get("user")
@@ -77,7 +83,12 @@ if date_col and value_col:
         df_ts[date_col] = pd.to_datetime(df_ts[date_col], errors="coerce")
         df_ts = df_ts.dropna(subset=[date_col])
         df_ts = df_ts.groupby(date_col, as_index=False)[value_col].sum()
-        st.plotly_chart(px.line(df_ts.sort_values(date_col), x=date_col, y=value_col), use_container_width=True)
+
+        if HAS_PLOTLY:
+            st.plotly_chart(px.line(df_ts.sort_values(date_col), x=date_col, y=value_col), use_container_width=True)
+        else:
+            st.line_chart(df_ts.set_index(date_col)[value_col])
+
     except Exception as e:
         st.warning(f"Time-series not available: {e}")
 else:
@@ -87,8 +98,18 @@ st.divider()
 st.subheader("Category breakdown")
 if category_col and break_val_col:
     try:
-        grp = df.groupby(category_col, as_index=False)[break_val_col].sum().sort_values(break_val_col, ascending=False).head(20)
-        st.plotly_chart(px.bar(grp, x=category_col, y=break_val_col), use_container_width=True)
+        grp = (
+            df.groupby(category_col, as_index=False)[break_val_col]
+            .sum()
+            .sort_values(break_val_col, ascending=False)
+            .head(20)
+        )
+
+        if HAS_PLOTLY:
+            st.plotly_chart(px.bar(grp, x=category_col, y=break_val_col), use_container_width=True)
+        else:
+            st.bar_chart(grp.set_index(category_col)[break_val_col])
+
     except Exception as e:
         st.warning(f"Breakdown not available: {e}")
 else:
