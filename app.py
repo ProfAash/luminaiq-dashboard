@@ -15,7 +15,7 @@ try:
     import importlib.metadata as md
     import plotly
     _plotly_ver = md.version("plotly")
-    import streamlit as st as _st  # if not already imported above
+    import streamlit as st  # if not already imported above
     _st.info(f"Plotly available: {_plotly_ver}")
 except Exception as _e:
     import streamlit as _st
