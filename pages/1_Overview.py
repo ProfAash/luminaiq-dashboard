@@ -1,7 +1,13 @@
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 from db import list_uploads_for_user
+
+# Try Plotly, fall back to Streamlit charts if not available
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except Exception:
+    HAS_PLOTLY = False
 
 st.set_page_config(page_title="Overview • LuminaIQ", page_icon="📈", layout="wide")
 user = st.session_state.get("user")
