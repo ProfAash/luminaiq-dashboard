@@ -2,6 +2,15 @@ import streamlit as st
 from db import init_db
 from auth import verify_credentials, ensure_default_admin
 
+# Debug: verify critical deps once at startup
+try:
+    import plotly, plotly.express as px  # noqa
+    import pandas as _pd  # noqa
+except Exception as _e:
+    import streamlit as _st
+    _st.error(f"Dependency import failed: {_e}")
+
+
 st.set_page_config(page_title="LuminaIQ Dashboard", page_icon="📊", layout="wide")
 
 init_db()
