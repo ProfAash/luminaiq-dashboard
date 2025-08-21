@@ -1,3 +1,9 @@
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except Exception:
+    HAS_PLOTLY = False
+
 import pandas as pd
 import streamlit as st
 from db import list_uploads_for_user

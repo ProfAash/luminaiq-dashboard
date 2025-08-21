@@ -1,10 +1,5 @@
 # --- ensure plotly is available (temporary fallback for Streamlit Cloud) ---
-import sys, subprocess
-try:
-    import plotly  # noqa
-except ModuleNotFoundError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "plotly==5.24.1"])
-    import plotly  # retry
+
 # ---------------------------------------------------------------------------
 import streamlit as st
 from db import init_db

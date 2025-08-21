@@ -1,3 +1,9 @@
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except Exception:
+    HAS_PLOTLY = False
+
 import pandas as pd
 import streamlit as st
 from db import list_uploads_for_user
@@ -42,6 +48,10 @@ else:
         if cat_cols:
             top_counts = df[cat_cols[0]].value_counts().head(10).reset_index()
             top_counts.columns = [cat_cols[0], "count"]
-            st.plotly_chart(px.bar(top_counts, x=cat_cols[0], y="count"), use_container_width=True)
+            if HAS_PLOTLY:
+                st.plotly_chart(px.bar(grp, x=category_col, y=break_val_col), use_container_width=True)
+            else:
+                st.bar_chart(grp.set_index(category_col)[break_val_col])
+
     except Exception as e:
         st.warning(f"Could not preview latest dataset: {e}")
