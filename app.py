@@ -10,6 +10,17 @@ except Exception as _e:
     import streamlit as _st
     _st.error(f"Dependency import failed: {_e}")
 
+# --- startup dependency check (temporary) ---
+try:
+    import importlib.metadata as md
+    import plotly
+    _plotly_ver = md.version("plotly")
+    import streamlit as st as _st  # if not already imported above
+    _st.info(f"Plotly available: {_plotly_ver}")
+except Exception as _e:
+    import streamlit as _st
+    _st.error(f"Dependency import failed: {type(_e).__name__}: {_e}")
+# --------------------------------------------
 
 st.set_page_config(page_title="LuminaIQ Dashboard", page_icon="📊", layout="wide")
 
