@@ -21,9 +21,9 @@ def _import_supabase():
         from supabase import create_client, Client  # type: ignore
         return create_client, Client
     except Exception as e:
-        raise RuntimeError(
-            "Supabase Python client not installed. Add `supabase>=2.4.0` to requirements.txt and redeploy."
-        ) from e
+        # Show the true import error
+        raise RuntimeError(f"Supabase import failed: {type(e).__name__}: {e}")
+
 
 def supabase():
     global _client

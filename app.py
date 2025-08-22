@@ -2,15 +2,19 @@
 
 # ---------------------------------------------------------------------------
 import streamlit as st
+
+# TEMP DIAG
+try:
+    import importlib.metadata as md
+    import supabase  # noqa
+    st.sidebar.success(f"Supabase present: {md.version('supabase')}")
+except Exception as e:
+    st.sidebar.error(f"Supabase import failed in app.py: {e}")
+
 from db import init_db
 from auth import verify_credentials, ensure_default_admin
 
 import importlib.metadata as md
-import streamlit as st
-try:
-    st.info(f"Plotly available: {md.version('plotly')}")
-except Exception as e:
-    st.error(f"Plotly not available: {e}")
 
 # Debug: verify critical deps once at startup
 try:

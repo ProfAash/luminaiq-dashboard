@@ -1,3 +1,10 @@
+try:
+    import supabase  # noqa
+except ModuleNotFoundError:
+    import streamlit as st
+    st.error("Supabase client not installed. Add `supabase>=2.4.0` to requirements.txt and redeploy.")
+    st.stop()
+
 # pages/2_Upload_Data.py
 import io
 from datetime import datetime
