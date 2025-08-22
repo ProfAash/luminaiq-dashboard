@@ -1,41 +1,58 @@
 # storage.py
+from __future__ import annotations
 import os
 from datetime import datetime
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
-from supabase import create_client, Client
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or ""
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or ""
 SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "luminaiq-uploads")
 
-_client: Optional[Client] = None
+_client = None  # type: ignore
 
-def _client_ok() -> bool:
-    return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY and SUPABASE_BUCKET)
+def _check_config() -> None:
+    if not (SUPABASE_URL and SUPABASE_SERVICE_KEY and SUPABASE_BUCKET):
+        raise RuntimeError(
+            "Supabase config missing. Set SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_BUCKET in Streamlit Secrets."
+        )
 
-def supabase() -> Client:
+def _import_supabase():
+    try:
+        from supabase import create_client, Client  # type: ignore
+        return create_client, Client
+    except Exception as e:
+        raise RuntimeError(
+            "Supabase Python client not installed. Add `supabase>=2.4.0` to requirements.txt and redeploy."
+        ) from e
+
+def supabase():
     global _client
     if _client is None:
+        _check_config()
+        create_client, _Client = _import_supabase()
         _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     return _client
 
 def upload_bytes(filename: str, content: bytes, content_type: str = "text/csv") -> Tuple[str, str]:
-    """
-    Uploads bytes to Supabase Storage and returns (path_in_bucket, public_url)
-    """
-    if not _client_ok():
-        raise RuntimeError("Supabase secrets missing")
+    """Upload bytes to Supabase Storage and return (path_in_bucket, public_url)."""
+    _check_config()
+    _import_supabase()  # ensures clear error if package missing
 
-    # Path like: uploads/2024-08-21/20240821T120102Z__filename.csv
     day = datetime.utcnow().strftime("%Y-%m-%d")
     ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    safe_name = filename.replace(" ", "_")
-    path = f"uploads/{day}/{ts}__{safe_name}"
+    safe = filename.replace(" ", "_")
+    path = f"uploads/{day}/{ts}__{safe}"
 
     sb = supabase().storage.from_(SUPABASE_BUCKET)
-
-    # If the object already exists, set upsert=True
     sb.upload(path, content, {"content-type": content_type, "x-upsert": "true"})
     public_url = sb.get_public_url(path)
     return path, public_url
+
+def create_signed_url(path: str, expires_in: int = 3600) -> str:
+    _check_config()
+    _import_supabase()
+    sb = supabase().storage.from_(SUPABASE_BUCKET)
+    res = sb.create_signed_url(path, expires_in=expires_in)
+    return res.get("signedURL") or res.get("signedUrl") or ""
+
+
