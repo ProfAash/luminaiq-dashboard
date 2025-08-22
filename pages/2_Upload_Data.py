@@ -15,6 +15,24 @@ import streamlit as st
 from db import insert_upload, list_uploads_for_user
 from storage import upload_bytes
 
+from storage import upload_bytes
+...
+try:
+    path_in_bucket, public_url = upload_bytes(uploaded.name, file_bytes, "text/csv")
+    save_path_for_db = public_url
+    st.success("✅ Upload saved to cloud storage.")
+except Exception as e:
+    # Fallback to local (ephemeral in Cloud)
+    import os, pandas as pd
+    st.warning(f"Cloud storage unavailable ({e}). Saving locally for now.")
+    os.makedirs("uploads", exist_ok=True)
+    local_path = os.path.join("uploads", uploaded.name.replace(" ", "_"))
+    pd.read_csv(io.BytesIO(file_bytes)).to_csv(local_path, index=False)
+    save_path_for_db = local_path
+
+# record in DB using save_path_for_db
+
+
 st.set_page_config(page_title="Upload Data • LuminaIQ", page_icon="📤", layout="wide")
 
 user = st.session_state.get("user")
