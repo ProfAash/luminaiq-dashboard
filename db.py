@@ -31,11 +31,21 @@ def init_db():
     conn.commit()
     return conn
 
+# --- helpers ---
+def _row_to_dict(row):
+    return dict(row) if row is not None else None
+
+def _rows_to_dicts(cursor, rows):
+    # Use cursor.description so column order/names are guaranteed
+    cols = [c[0] for c in cursor.description]
+    return [dict(zip(cols, r)) for r in rows]
+
 def get_user_by_email(email: str):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE email = ?", (email.lower(),))
-    return cur.fetchone()
+    row = cur.fetchone()
+    return _row_to_dict(row)
 
 def insert_user(email: str, name: str, password_hash: str, role: str = "client", company: str = "") -> int:
     conn = get_conn()
@@ -50,15 +60,25 @@ def insert_user(email: str, name: str, password_hash: str, role: str = "client",
 def list_uploads_for_user(user_id: int):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM uploads WHERE user_id = ? ORDER BY uploaded_at DESC", (user_id,))
-    return cur.fetchall()
+    # Select explicit columns and stable names
+    cur.execute(
+        """
+        SELECT filename, uploaded_at, rows, cols, id, user_id, path
+        FROM uploads
+        WHERE user_id = ?
+        ORDER BY uploaded_at DESC
+        """,
+        (user_id,),
+    )
+    rows = cur.fetchall()
+    return _rows_to_dicts(cur, rows)
 
 def insert_upload(user_id: int, filename: str, path: str, uploaded_at: str, rows: int, cols: int) -> int:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO uploads (user_id, filename, path, uploaded_at, rows, cols) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, filename, path, uploaded_at, rows, cols)
+        (user_id, filename, path, uploaded_at, rows, cols),
     )
     conn.commit()
     return cur.lastrowid
