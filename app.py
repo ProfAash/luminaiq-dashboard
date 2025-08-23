@@ -3,6 +3,15 @@
 # ---------------------------------------------------------------------------
 import streamlit as st
 
+# TEMP: show whether supabase is actually importable
+try:
+    import importlib.metadata as md
+    import supabase  # noqa
+    st.sidebar.success(f"Supabase present: {md.version('supabase')}")
+except Exception as e:
+    st.sidebar.error(f"Supabase import failed: {e}")
+
+
 # TEMP DIAG
 try:
     import importlib.metadata as md
