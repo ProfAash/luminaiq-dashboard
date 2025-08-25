@@ -1,14 +1,24 @@
-import pkg_resources, streamlit as st
-
+# app.py
 import os
+import importlib.util
+import importlib.metadata as md
+import pkg_resources
 import streamlit as st
 
-# ✅ MUST be the first Streamlit call in this script
-st.set_page_config(page_title="LuminaIQ Dashboard", page_icon="📊", layout="wide")
+from db import init_db
+from auth import verify_credentials, ensure_default_admin
 
-# (Optional) diagnostics AFTER set_page_config
+# ---------------------------------------------------------------------
+# MUST be the first Streamlit call
+st.set_page_config(
+    page_title="LuminaIQ Dashboard",
+    page_icon="📊",
+    layout="wide",
+)
+# ---------------------------------------------------------------------
+
+# Optional diagnostics (AFTER set_page_config)
 try:
-    import importlib.util, importlib.metadata as md
     if importlib.util.find_spec("supabase"):
         st.sidebar.success(f"Supabase present: {md.version('supabase')}")
     else:
@@ -16,72 +26,31 @@ try:
 except Exception as e:
     st.sidebar.warning(f"Diag error: {e}")
 
-from auth import verify_credentials, ensure_default_admin  # etc.
-from db import init_db
-# ... the rest of your code ...
-
-# ❌ WRONG: __st.error("...") or _st.error("...")
-# ✅ RIGHT:
-# st.error("Your message")  # if you need to show an error
-
-
-packages = sorted([p.project_name + "==" + p.version for p in pkg_resources.working_set])
-st.sidebar.write("Installed packages:", packages)
-
-
-# ---------------------------------------------------------------------------
-import streamlit as st
-
-# TEMP: show whether supabase is actually importable
-import importlib.util, importlib.metadata as md
-if importlib.util.find_spec("supabase"):
-    st.sidebar.success(f"Supabase present: {md.version('supabase')}")
-else:
-    st.sidebar.error("Supabase missing at import time")
-
-
-
-# TEMP DIAG
+# (Optional) list installed packages (can remove if too noisy)
 try:
-    import importlib.metadata as md
-    import supabase  # noqa
-    st.sidebar.success(f"Supabase present: {md.version('supabase')}")
+    packages = sorted([f"{p.project_name}=={p.version}" for p in pkg_resources.working_set])
+    st.sidebar.write("Installed packages:", packages)
+except Exception:
+    pass
+
+# (Optional) quick dependency checks
+try:
+    import plotly  # noqa: F401
+    import plotly.express as px  # noqa: F401
+    import pandas as _pd  # noqa: F401
+    st.sidebar.info(f"Plotly available: {md.version('plotly')}")
 except Exception as e:
-    st.sidebar.error(f"Supabase import failed in app.py: {e}")
+    st.error(f"Dependency import failed: {type(e).__name__}: {e}")
 
-from db import init_db
-from auth import verify_credentials, ensure_default_admin
-
-import importlib.metadata as md
-
-# Debug: verify critical deps once at startup
-try:
-    import plotly, plotly.express as px  # noqa
-    import pandas as _pd  # noqa
-except Exception as _e:
-    import streamlit as _st
-    _st.error(f"Dependency import failed: {_e}")
-
-# --- startup dependency check (temporary) ---
-try:
-    import importlib.metadata as md
-    import plotly
-    _plotly_ver = md.version("plotly")
-    import streamlit as st  # if not already imported above
-    _st.info(f"Plotly available: {_plotly_ver}")
-except Exception as _e:
-    import streamlit as _st
-    _st.error(f"Dependency import failed: {type(_e).__name__}: {_e}")
-# --------------------------------------------
-
-st.set_page_config(page_title="LuminaIQ Dashboard", page_icon="📊", layout="wide")
-
+# Initialize DB and default admin
 init_db()
 created_admin = ensure_default_admin()
 
+# State bootstrap
 if "user" not in st.session_state:
     st.session_state.user = None
 
+# ---------------- UI helpers ----------------
 def login_form():
     st.title("LuminaIQ Client Dashboard")
     st.caption("Secure analytics workspace for clients")
@@ -114,6 +83,7 @@ def topbar():
         st.page_link("pages/4_Predictive_Forecasting.py", label="🔮 Predictive Forecasting")
         st.page_link("pages/6_Client_Template.py", label="🧩 Client Template")
 
+# ---------------- Router ----------------
 if st.session_state.user is None:
     login_form()
 else:
@@ -121,10 +91,12 @@ else:
     st.title("🏠 Home")
     if created_admin:
         st.info("Default admin created: admin@luminaiq.co / Admin#123 — please change it under Admin tools.")
-    st.markdown("""
-    **What you can do**
-    - Upload a CSV and explore it with interactive charts.
-    - Build quick KPIs and breakdowns by categories.
-    - Run a baseline forecast on a time-series column.
-    - Map any client CSV using the Client Template page.
-    """)
+    st.markdown(
+        """
+        **What you can do**
+        - Upload a CSV and explore it with interactive charts.
+        - Build quick KPIs and breakdowns by categories.
+        - Run a baseline forecast on a time-series column.
+        - Map any client CSV using the Client Template page.
+        """
+    )
