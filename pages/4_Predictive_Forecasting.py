@@ -31,19 +31,60 @@ options = {f"{u['uploaded_at']} — {u['filename']}": u for u in uploads}
 choice = st.selectbox("Choose a dataset", list(options.keys()))
 ds = options[choice]
 
-# Step 6: read from Supabase URL or local path
+# Read from Supabase URL or local path
 path = ds.get("path", "")
 try:
-    if path.startswith(("http://", "https://")):
-        df = pd.read_csv(path)
-    else:
-        df = pd.read_csv(path)
+    df = pd.read_csv(path)
 except Exception as e:
     st.error(f"Could not read dataset: {e}")
     st.stop()
 
-# Columns
-date_cols = [c for c in df.columns if "date" in c.lower()]
+# --- Helper: find/create a date column (supports 'Year') ---------------------
+def find_date_cols(df: pd.DataFrame):
+    """
+    Return (df, list_of_date_columns). If a numeric 'Year' column exists,
+    create a synthetic date column '__date_from_year__' = YYYY-01-01.
+    """
+    # name-based hits
+    name_hits = [
+        c for c in df.columns
+        if any(k in c.lower() for k in ("date", "day", "time", "year"))
+    ]
+    # dtype-based datetime hits
+    dtype_hits = list(df.select_dtypes(include=["datetime", "datetimetz"]).columns)
+
+    cols = list(dict.fromkeys(name_hits + dtype_hits))
+
+    # If we find a 'year' column and it is integer-like, synthesize a date
+    for c in cols:
+        if "year" in c.lower():
+            try:
+                y = df[c].astype("Int64").dropna().astype(int)
+                if (y.between(1000, 3000)).all():
+                    df["__date_from_year__"] = pd.to_datetime(
+                        df[c].astype(int).astype(str) + "-01-01", errors="coerce"
+                    )
+                    return df, ["__date_from_year__"]
+            except Exception:
+                pass
+
+    # Also try to coerce name-based date-like columns to datetime
+    for c in name_hits:
+        if c not in dtype_hits:
+            try:
+                coerced = pd.to_datetime(df[c], errors="coerce")
+                if coerced.notna().sum() > 0:
+                    df[c] = coerced
+            except Exception:
+                pass
+
+    # Recompute any real datetime columns after coercion
+    date_like = list(df.select_dtypes(include=["datetime", "datetimetz"]).columns)
+    return df, date_like
+
+# ---------------------------------------------------------------------------
+
+df, date_cols = find_date_cols(df)
 num_cols = df.select_dtypes("number").columns.tolist()
 
 if not date_cols or not num_cols:
@@ -52,7 +93,7 @@ if not date_cols or not num_cols:
 
 date_col = st.selectbox("Date column", date_cols, index=0)
 target_col = st.selectbox("Target (numeric)", num_cols, index=0)
-periods = st.slider("Forecast periods", 7, 90, 30)
+periods = st.slider("Forecast periods (days)", 7, 90, 30)
 
 # Clean & prepare
 df = df.dropna(subset=[date_col, target_col]).copy()
@@ -69,8 +110,11 @@ last_t = df["t"].iloc[-1]
 future_t = np.arange(last_t + 1, last_t + periods + 1).reshape(-1, 1)
 yhat = model.predict(future_t)
 
-future_dates = pd.date_range(start=df[date_col].iloc[-1] + pd.Timedelta(days=1),
-                             periods=periods, freq="D")
+future_dates = pd.date_range(
+    start=df[date_col].iloc[-1] + pd.Timedelta(days=1),
+    periods=periods,
+    freq="D",
+)
 forecast_df = pd.DataFrame({date_col: future_dates, target_col: yhat, "type": "forecast"})
 hist_df = df[[date_col, target_col]].copy()
 hist_df["type"] = "history"
@@ -91,4 +135,3 @@ st.download_button(
 )
 
 st.caption("Baseline linear trend only. For seasonality/holidays, upgrade to Prophet/ARIMA.")
-
