@@ -1,5 +1,30 @@
 import pkg_resources, streamlit as st
 
+import os
+import streamlit as st
+
+# ✅ MUST be the first Streamlit call in this script
+st.set_page_config(page_title="LuminaIQ Dashboard", page_icon="📊", layout="wide")
+
+# (Optional) diagnostics AFTER set_page_config
+try:
+    import importlib.util, importlib.metadata as md
+    if importlib.util.find_spec("supabase"):
+        st.sidebar.success(f"Supabase present: {md.version('supabase')}")
+    else:
+        st.sidebar.warning("Supabase missing")
+except Exception as e:
+    st.sidebar.warning(f"Diag error: {e}")
+
+from auth import verify_credentials, ensure_default_admin  # etc.
+from db import init_db
+# ... the rest of your code ...
+
+# ❌ WRONG: __st.error("...") or _st.error("...")
+# ✅ RIGHT:
+# st.error("Your message")  # if you need to show an error
+
+
 packages = sorted([p.project_name + "==" + p.version for p in pkg_resources.working_set])
 st.sidebar.write("Installed packages:", packages)
 
