@@ -1,15 +1,19 @@
-# --- ensure plotly is available (temporary fallback for Streamlit Cloud) ---
+import pkg_resources, streamlit as st
+
+packages = sorted([p.project_name + "==" + p.version for p in pkg_resources.working_set])
+st.sidebar.write("Installed packages:", packages)
+
 
 # ---------------------------------------------------------------------------
 import streamlit as st
 
 # TEMP: show whether supabase is actually importable
-try:
-    import importlib.metadata as md
-    import supabase  # noqa
+import importlib.util, importlib.metadata as md
+if importlib.util.find_spec("supabase"):
     st.sidebar.success(f"Supabase present: {md.version('supabase')}")
-except Exception as e:
-    st.sidebar.error(f"Supabase import failed: {e}")
+else:
+    st.sidebar.error("Supabase missing at import time")
+
 
 
 # TEMP DIAG
