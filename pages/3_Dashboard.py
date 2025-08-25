@@ -1,8 +1,12 @@
 # pages/3_Dashboard.py
+import json
+from io import BytesIO
+from zipfile import ZipFile, ZIP_DEFLATED
+
 import pandas as pd
 import streamlit as st
-from io import BytesIO
-from db import list_uploads_for_user
+
+from db import list_uploads_for_user, save_view, list_views, delete_view
 
 # --- Plotly optional ---
 try:
@@ -37,7 +41,15 @@ if not uploads:
     st.stop()
 
 options = {f"{u['uploaded_at']} — {u['filename']}": u for u in uploads}
-choice = st.selectbox("Choose a dataset", list(options.keys()), key="dash_dataset")
+
+# Deep-link support via query params
+qp = st.query_params
+if "dataset" in qp and qp["dataset"] in options:
+    default_dataset = qp["dataset"]
+else:
+    default_dataset = list(options.keys())[0]
+
+choice = st.selectbox("Choose a dataset", list(options.keys()), key="dash_dataset", index=list(options.keys()).index(default_dataset))
 ds = options[choice]
 
 # ---------- Load data (URL or local path) ----------
@@ -73,7 +85,7 @@ with st.expander("Filters", True):
     else:
         drange = None
 
-    # --- Searchable category values (server-side filtered) ---
+    # Searchable category values
     cat_query = ""
     keep_vals = []
     if sel_cat != "—":
@@ -98,11 +110,12 @@ with st.expander("Filters", True):
             key="dash_keep_vals",
         )
 
-    # --- Optional numeric range filter for the selected value column ---
+    # Numeric range filter for selected value
     num_range = None
     if sel_val:
-        col_min = float(pd.to_numeric(df[sel_val], errors="coerce").min())
-        col_max = float(pd.to_numeric(df[sel_val], errors="coerce").max())
+        series_numeric = pd.to_numeric(df[sel_val], errors="coerce")
+        col_min = float(series_numeric.min())
+        col_max = float(series_numeric.max())
         num_range = st.slider(
             f"{sel_val} range",
             min_value=float(col_min),
@@ -111,16 +124,16 @@ with st.expander("Filters", True):
             key="dash_val_range",
         )
 
-# Apply filters
+# ---------- Apply filters ----------
 df_view = df.copy()
 
-# Date range
+# Date
 if sel_dt != "—" and drange:
     d0, d1 = pd.to_datetime(drange[0]), pd.to_datetime(drange[1])
     sdt = pd.to_datetime(df_view[sel_dt], errors="coerce")
     df_view = df_view[(sdt.dt.date >= d0.date()) & (sdt.dt.date <= d1.date())]
 
-# Category multiselect
+# Category
 if sel_cat != "—" and keep_vals:
     df_view = df_view[df_view[sel_cat].astype(str).isin(keep_vals)]
 
@@ -147,6 +160,9 @@ with c3:
 st.divider()
 
 # ---------- Charts ----------
+bar_fig = None
+line_fig = None
+
 # Category breakdown
 if sel_cat != "—" and sel_val:
     grp = (
@@ -157,43 +173,20 @@ if sel_cat != "—" and sel_val:
                .head(20)
     )
     if HAS_PLOTLY:
-        fig_bar = px.bar(grp, x=sel_cat, y=sel_val, title=f"{sel_val} by {sel_cat} (Top 20)")
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-        if HAS_KALEIDO and pio is not None:
-            buf = BytesIO()
-            try:
-                pio.write_image(fig_bar, buf, format="png", scale=2)
-                st.download_button("Download bar chart PNG", buf.getvalue(),
-                                   "category_chart.png", "image/png")
-            except Exception as e:
-                st.caption(f"PNG export unavailable: {e}")
-        else:
-            st.caption("Tip: add `kaleido==0.2.1` to requirements.txt to enable PNG export.")
+        bar_fig = px.bar(grp, x=sel_cat, y=sel_val, title=f"{sel_val} by {sel_cat} (Top 20)")
+        st.plotly_chart(bar_fig, use_container_width=True)
     else:
         st.bar_chart(grp.set_index(sel_cat)[sel_val])
 else:
     # Fallback: simple histogram of first numeric
-    if num_cols:
+    if num_cols and HAS_PLOTLY:
         first_num = num_cols[0]
-        if HAS_PLOTLY:
-            fig_hist = px.histogram(df_view, x=first_num, title=f"Distribution of {first_num}")
-            st.plotly_chart(fig_hist, use_container_width=True)
+        bar_fig = px.histogram(df_view, x=first_num, title=f"Distribution of {first_num}")
+        st.plotly_chart(bar_fig, use_container_width=True)
+    elif num_cols:
+        st.bar_chart(df_view[num_cols[0]].value_counts().sort_index())
 
-            if HAS_KALEIDO and pio is not None:
-                buf = BytesIO()
-                try:
-                    pio.write_image(fig_hist, buf, format="png", scale=2)
-                    st.download_button("Download histogram PNG", buf.getvalue(),
-                                       "histogram.png", "image/png")
-                except Exception as e:
-                    st.caption(f"PNG export unavailable: {e}")
-            else:
-                st.caption("Tip: add `kaleido==0.2.1` to requirements.txt to enable PNG export.")
-        else:
-            st.bar_chart(df_view[first_num].value_counts().sort_index())
-
-# Time series (if chosen)
+# Time series
 if sel_dt != "—" and sel_val:
     ts = (
         df_view[[sel_dt, sel_val]]
@@ -206,24 +199,124 @@ if sel_dt != "—" and sel_val:
     )
     if len(ts):
         if HAS_PLOTLY:
-            fig_line = px.line(ts, x=sel_dt, y=sel_val, title=f"{sel_val} over time")
-            st.plotly_chart(fig_line, use_container_width=True)
-
-            if HAS_KALEIDO and pio is not None:
-                buf = BytesIO()
-                try:
-                    pio.write_image(fig_line, buf, format="png", scale=2)
-                    st.download_button("Download time-series PNG", buf.getvalue(),
-                                       "timeseries.png", "image/png")
-                except Exception as e:
-                    st.caption(f"PNG export unavailable: {e}")
-            else:
-                st.caption("Tip: add `kaleido==0.2.1` to requirements.txt to enable PNG export.")
+            line_fig = px.line(ts, x=sel_dt, y=sel_val, title=f"{sel_val} over time")
+            st.plotly_chart(line_fig, use_container_width=True)
         else:
             st.line_chart(ts.set_index(sel_dt)[sel_val])
 
 st.divider()
 
-# ---------- Downloads ----------
-csv_bytes = df_view.to_csv(index=False).encode()
-st.download_button("Download filtered CSV", csv_bytes, "filtered.csv", "text/csv")
+# ---------- 6) Saved Views ----------
+st.subheader("Saved views")
+
+# Compose payload (what defines this view)
+view_payload = {
+    "dataset": choice,
+    "sel_cat": sel_cat,
+    "sel_val": sel_val,
+    "sel_dt": sel_dt,
+    "drange": [str(d) for d in st.session_state.get("dash_drange", [])] if sel_dt != "—" and st.session_state.get("dash_drange") else None,
+    "keep_vals": st.session_state.get("dash_keep_vals", []),
+    "cat_query": st.session_state.get("dash_cat_query", ""),
+    "num_range": st.session_state.get("dash_val_range", None),
+}
+
+# Buttons row
+csa, csb, csc = st.columns([2,2,3])
+
+with csa:
+    new_name = st.text_input("View name", placeholder="e.g., Q1 · Region=Gauteng · Sales", key="dash_view_name")
+    if st.button("Save view", type="primary", use_container_width=True):
+        try:
+            save_view(user_id=user["id"], page="dashboard", name=new_name.strip(), payload_json=json.dumps(view_payload))
+            st.success(f"Saved view “{new_name}”.")
+        except Exception as e:
+            st.error(f"Could not save view: {e}")
+
+with csb:
+    all_views = list_views(user["id"], "dashboard")
+    labels = [v["name"] for v in all_views]
+    pick = st.selectbox("Load view", ["—"] + labels, index=0, key="dash_pick_view")
+    if pick != "—":
+        chosen = next(v for v in all_views if v["name"] == pick)
+        payload = json.loads(chosen["payload"])
+
+        # Restore session state
+        st.session_state["dash_dataset"] = payload.get("dataset", choice)
+        st.session_state["dash_cat"] = payload.get("sel_cat", "—")
+        st.session_state["dash_val"] = payload.get("sel_val", "")
+        st.session_state["dash_dt"] = payload.get("sel_dt", "—")
+        if payload.get("drange"):
+            from datetime import date
+            try:
+                d0 = pd.to_datetime(payload["drange"][0]).date()
+                d1 = pd.to_datetime(payload["drange"][1]).date()
+                st.session_state["dash_drange"] = (d0, d1)
+            except Exception:
+                st.session_state["dash_drange"] = None
+        st.session_state["dash_keep_vals"] = payload.get("keep_vals", [])
+        st.session_state["dash_cat_query"] = payload.get("cat_query", "")
+        if payload.get("num_range") is not None:
+            st.session_state["dash_val_range"] = tuple(payload["num_range"])
+
+        # Update query params for deep link
+        qp.update({"dataset": st.session_state["dash_dataset"]})
+        st.rerun()
+
+with csc:
+    del_pick = st.selectbox("Delete view", ["—"] + labels, index=0, key="dash_del_view")
+    if del_pick != "—" and st.button("Delete", use_container_width=True):
+        try:
+            delete_view(user["id"], "dashboard", del_pick)
+            st.success(f"Deleted view “{del_pick}”.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not delete: {e}")
+
+# Offer raw JSON and deep-link helper
+dl_json = json.dumps(view_payload, indent=2).encode()
+st.download_button("Download view JSON", dl_json, "dashboard_view.json", "application/json")
+
+# Also reflect current dataset in query params for sharable link
+qp.update({"dataset": choice})
+
+st.caption("Tip: copy the URL from your browser after setting filters — it includes the selected dataset. Saved views restore all filters, not just dataset.")
+
+st.divider()
+
+# ---------- 7) One-click Export (ZIP) ----------
+st.subheader("Export")
+exp_note = []
+if not HAS_PLOTLY:
+    exp_note.append("Plotly not available → charts PNGs will be skipped.")
+if HAS_PLOTLY and not HAS_KALEIDO:
+    exp_note.append("kaleido not installed → charts PNGs will be skipped.")
+if exp_note:
+    st.info(" ".join(exp_note))
+
+if st.button("Download ZIP (filtered CSV + charts PNGs)", type="primary"):
+    mem = BytesIO()
+    with ZipFile(mem, mode="w", compression=ZIP_DEFLATED) as zf:
+        # CSV
+        zf.writestr("filtered.csv", df_view.to_csv(index=False))
+
+        # Charts (if possible)
+        if HAS_PLOTLY and HAS_KALEIDO and pio is not None:
+            try:
+                if bar_fig is not None:
+                    buf = BytesIO()
+                    pio.write_image(bar_fig, buf, format="png", scale=2)
+                    zf.writestr("chart_bar.png", buf.getvalue())
+                if line_fig is not None:
+                    buf = BytesIO()
+                    pio.write_image(line_fig, buf, format="png", scale=2)
+                    zf.writestr("chart_timeseries.png", buf.getvalue())
+            except Exception as e:
+                zf.writestr("export_warning.txt", f"PNG export failed: {e}")
+
+    st.download_button(
+        "Download export.zip",
+        data=mem.getvalue(),
+        file_name="export.zip",
+        mime="application/zip",
+    )
