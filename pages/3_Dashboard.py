@@ -1,6 +1,8 @@
 # pages/3_Dashboard.py
 import pandas as pd
 import streamlit as st
+from io import BytesIO
+
 from db import list_uploads_for_user
 
 # --- Plotly optional ---
@@ -11,13 +13,14 @@ except Exception:
     HAS_PLOTLY = False
 
 # --- Kaleido (for PNG export) optional ---
+# We check for kaleido itself (plotly.io is always present).
 try:
-    import plotly.io as pio  # requires kaleido for static image export
+    import kaleido  # noqa: F401
+    import plotly.io as pio
     HAS_KALEIDO = True
 except Exception:
     HAS_KALEIDO = False
-
-from io import BytesIO
+    pio = None  # type: ignore
 
 st.set_page_config(page_title="Dashboards • LuminaIQ", page_icon="📊", layout="wide")
 
@@ -85,14 +88,19 @@ if sel_cat != "—":
         df_view = df_view[df_view[sel_cat].isin(keep_vals)]
 
 # ---------- KPIs ----------
+from components import kpi
+
 rows, cols = df_view.shape
 c1, c2, c3 = st.columns(3)
-c1.metric("Rows", f"{rows:,}")
-c2.metric("Columns", f"{cols:,}")
-if sel_val:
-    c3.metric(f"Total {sel_val}", f"{df_view[sel_val].sum():,.2f}")
-else:
-    c3.metric("Total", "—")
+with c1:
+    kpi("Rows", f"{rows:,}")
+with c2:
+    kpi("Columns", f"{cols:,}")
+with c3:
+    if sel_val:
+        kpi(f"Total {sel_val}", f"{df_view[sel_val].sum():,.2f}")
+    else:
+        kpi("Total", "—")
 
 st.divider()
 
@@ -111,12 +119,16 @@ if sel_cat != "—" and sel_val:
         st.plotly_chart(fig_bar, use_container_width=True)
 
         # PNG export (requires kaleido)
-        if HAS_KALEIDO:
+        if HAS_KALEIDO and pio is not None:
             buf = BytesIO()
             try:
                 pio.write_image(fig_bar, buf, format="png", scale=2)
-                st.download_button("Download bar chart PNG", buf.getvalue(),
-                                   "category_chart.png", "image/png")
+                st.download_button(
+                    "Download bar chart PNG",
+                    buf.getvalue(),
+                    "category_chart.png",
+                    "image/png",
+                )
             except Exception as e:
                 st.caption(f"PNG export unavailable: {e}")
         else:
@@ -131,12 +143,16 @@ else:
             fig_hist = px.histogram(df_view, x=num_cols[0], title=f"Distribution of {num_cols[0]}")
             st.plotly_chart(fig_hist, use_container_width=True)
 
-            if HAS_KALEIDO:
+            if HAS_KALEIDO and pio is not None:
                 buf = BytesIO()
                 try:
                     pio.write_image(fig_hist, buf, format="png", scale=2)
-                    st.download_button("Download histogram PNG", buf.getvalue(),
-                                       "histogram.png", "image/png")
+                    st.download_button(
+                        "Download histogram PNG",
+                        buf.getvalue(),
+                        "histogram.png",
+                        "image/png",
+                    )
                 except Exception as e:
                     st.caption(f"PNG export unavailable: {e}")
             else:
@@ -159,12 +175,16 @@ if sel_dt != "—" and sel_val:
             fig_line = px.line(ts, x=sel_dt, y=sel_val, title=f"{sel_val} over time")
             st.plotly_chart(fig_line, use_container_width=True)
 
-            if HAS_KALEIDO:
+            if HAS_KALEIDO and pio is not None:
                 buf = BytesIO()
                 try:
                     pio.write_image(fig_line, buf, format="png", scale=2)
-                    st.download_button("Download time-series PNG", buf.getvalue(),
-                                       "timeseries.png", "image/png")
+                    st.download_button(
+                        "Download time-series PNG",
+                        buf.getvalue(),
+                        "timeseries.png",
+                        "image/png",
+                    )
                 except Exception as e:
                     st.caption(f"PNG export unavailable: {e}")
             else:
@@ -177,4 +197,3 @@ st.divider()
 # ---------- Downloads ----------
 csv_bytes = df_view.to_csv(index=False).encode()
 st.download_button("Download filtered CSV", csv_bytes, "filtered.csv", "text/csv")
-
