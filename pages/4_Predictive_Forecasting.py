@@ -1,11 +1,10 @@
-# pages/4_Predictive_Forecasting.py
 import numpy as np
 import pandas as pd
 import streamlit as st
 from db import list_uploads_for_user
 from sklearn.linear_model import LinearRegression
 
-# Try Plotly; fall back to Streamlit charts if not available
+# Plotly optional
 try:
     import plotly.express as px
     HAS_PLOTLY = True
@@ -31,7 +30,7 @@ options = {f"{u['uploaded_at']} — {u['filename']}": u for u in uploads}
 choice = st.selectbox("Choose a dataset", list(options.keys()))
 ds = options[choice]
 
-# Read from Supabase URL or local path
+# Load
 path = ds.get("path", "")
 try:
     df = pd.read_csv(path)
@@ -39,50 +38,30 @@ except Exception as e:
     st.error(f"Could not read dataset: {e}")
     st.stop()
 
-# --- Helper: find/create a date column (supports 'Year') ---------------------
+# Find/create date cols (accept 'Year')
 def find_date_cols(df: pd.DataFrame):
-    """
-    Return (df, list_of_date_columns). If a numeric 'Year' column exists,
-    create a synthetic date column '__date_from_year__' = YYYY-01-01.
-    """
-    # name-based hits
-    name_hits = [
-        c for c in df.columns
-        if any(k in c.lower() for k in ("date", "day", "time", "year"))
-    ]
-    # dtype-based datetime hits
+    name_hits = [c for c in df.columns if any(k in c.lower() for k in ("date", "day", "time", "year"))]
     dtype_hits = list(df.select_dtypes(include=["datetime", "datetimetz"]).columns)
-
     cols = list(dict.fromkeys(name_hits + dtype_hits))
-
-    # If we find a 'year' column and it is integer-like, synthesize a date
+    # synthesize from Year
     for c in cols:
         if "year" in c.lower():
             try:
                 y = df[c].astype("Int64").dropna().astype(int)
                 if (y.between(1000, 3000)).all():
-                    df["__date_from_year__"] = pd.to_datetime(
-                        df[c].astype(int).astype(str) + "-01-01", errors="coerce"
-                    )
+                    df["__date_from_year__"] = pd.to_datetime(df[c].astype(int).astype(str) + "-01-01", errors="coerce")
                     return df, ["__date_from_year__"]
             except Exception:
                 pass
-
-    # Also try to coerce name-based date-like columns to datetime
+    # coerce likely date columns
     for c in name_hits:
         if c not in dtype_hits:
             try:
-                coerced = pd.to_datetime(df[c], errors="coerce")
-                if coerced.notna().sum() > 0:
-                    df[c] = coerced
+                df[c] = pd.to_datetime(df[c], errors="coerce")
             except Exception:
                 pass
-
-    # Recompute any real datetime columns after coercion
     date_like = list(df.select_dtypes(include=["datetime", "datetimetz"]).columns)
     return df, date_like
-
-# ---------------------------------------------------------------------------
 
 df, date_cols = find_date_cols(df)
 num_cols = df.select_dtypes("number").columns.tolist()
@@ -93,15 +72,24 @@ if not date_cols or not num_cols:
 
 date_col = st.selectbox("Date column", date_cols, index=0)
 target_col = st.selectbox("Target (numeric)", num_cols, index=0)
-periods = st.slider("Forecast periods (days)", 7, 90, 30)
 
-# Clean & prepare
+# Frequency & horizon
+freq_map = {"Daily": "D", "Weekly": "W", "Monthly": "MS"}
+freq_name = st.selectbox("Forecast frequency", list(freq_map.keys()), index=0)
+freq = freq_map[freq_name]
+max_periods = 365 if freq == "D" else (52 if freq == "W" else 24)
+periods = st.slider("Forecast periods", 7 if freq == "D" else 8, max_periods, 30 if freq == "D" else 12)
+
+# Prep
 df = df.dropna(subset=[date_col, target_col]).copy()
 df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 df = df.dropna(subset=[date_col]).sort_values(date_col)
 
+# Reindex evenly by selected frequency to stabilize the baseline trend
+df = df.set_index(date_col).resample(freq).sum(numeric_only=True).reset_index()
+
 df["t"] = np.arange(len(df))
-X = df[["t"]].values.reshape(-1, 1)
+X = df[["t"]].values
 y = df[target_col].values
 model = LinearRegression().fit(X, y)
 
@@ -110,15 +98,29 @@ last_t = df["t"].iloc[-1]
 future_t = np.arange(last_t + 1, last_t + periods + 1).reshape(-1, 1)
 yhat = model.predict(future_t)
 
-future_dates = pd.date_range(
-    start=df[date_col].iloc[-1] + pd.Timedelta(days=1),
-    periods=periods,
-    freq="D",
-)
+future_dates = pd.date_range(start=df[date_col].iloc[-1] + pd.tseries.frequencies.to_offset(freq),
+                             periods=periods, freq=freq)
 forecast_df = pd.DataFrame({date_col: future_dates, target_col: yhat, "type": "forecast"})
 hist_df = df[[date_col, target_col]].copy()
 hist_df["type"] = "history"
 both = pd.concat([hist_df, forecast_df], ignore_index=True)
+
+# Backtest (MAPE)
+def mape(y_true, y_pred):
+    y_true, y_pred = np.array(y_true), np.array(y_pred)
+    denom = np.clip(np.abs(y_true), 1e-9, None)
+    return float(np.mean(np.abs((y_true - y_pred) / denom)) * 100.0)
+
+with st.expander("Advanced (Backtest)", False):
+    do_bt = st.checkbox("Evaluate last 20% (MAPE)")
+    if do_bt and len(df) > 10:
+        n = max(1, int(len(df) * 0.2))
+        train, test = df.iloc[:-n].copy(), df.iloc[-n:].copy()
+        train["t"] = np.arange(len(train))
+        test["t"]  = np.arange(len(train), len(train) + len(test))
+        m = LinearRegression().fit(train[["t"]], train[target_col].values)
+        pred = m.predict(test[["t"]])
+        st.info(f"MAPE on holdout: **{mape(test[target_col].values, pred):.2f}%**")
 
 # Plot
 if HAS_PLOTLY:
@@ -134,4 +136,4 @@ st.download_button(
     mime="text/csv",
 )
 
-st.caption("Baseline linear trend only. For seasonality/holidays, upgrade to Prophet/ARIMA.")
+st.caption("Baseline linear trend with frequency control. For seasonality/holidays, upgrade to Prophet/ARIMA.")

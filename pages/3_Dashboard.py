@@ -1,9 +1,8 @@
-# pages/3_Dashboard.py
 import pandas as pd
 import streamlit as st
 from db import list_uploads_for_user
 
-# Try Plotly; fall back to Streamlit charts if not available
+# Plotly optional
 try:
     import plotly.express as px
     HAS_PLOTLY = True
@@ -24,84 +23,106 @@ if not uploads:
     st.info("Upload a dataset first.")
     st.stop()
 
-# Pick a dataset
+# Pick dataset
 options = {f"{u['uploaded_at']} — {u['filename']}": u for u in uploads}
 choice = st.selectbox("Choose a dataset", list(options.keys()))
 ds = options[choice]
 
-# Step 6 in action: read from Supabase URL (or local path if running locally)
+# Load data (URL or local path)
 path = ds.get("path", "")
 try:
-    if isinstance(path, str) and path.startswith(("http://", "https://")):
-        df = pd.read_csv(path)
-    else:
-        # local path (useful for local dev; may not exist on Streamlit Cloud)
-        df = pd.read_csv(path)
+    df = pd.read_csv(path)
 except Exception as e:
-    st.error(
-        "Could not read dataset.\n\n"
-        f"Path: `{path}`\n\n"
-        "If this is a local path from before we enabled cloud storage, "
-        "re-upload the file so it’s stored in Supabase."
-    )
+    st.error(f"Could not read dataset: {e}")
     st.stop()
 
-with st.expander("Preview data"):
-    st.dataframe(df.head(), use_container_width=True)
+# Try to coerce any date-like columns
+for c in df.columns:
+    if any(k in c.lower() for k in ("date", "day", "time")):
+        try:
+            df[c] = pd.to_datetime(df[c], errors="ignore")
+        except Exception:
+            pass
 
 num_cols = df.select_dtypes("number").columns.tolist()
 cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+dt_cols  = df.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
 
-# KPIs
-kpi_col = num_cols[0] if num_cols else None
-total_value = df[kpi_col].sum() if kpi_col else None
+# -------- Filter bar --------
+with st.expander("Filters", True):
+    colf1, colf2, colf3, colf4 = st.columns(4)
+    sel_cat = colf1.selectbox("Category (optional)", ["—"] + cat_cols)
+    sel_val = colf2.selectbox("Value (numeric)", num_cols if num_cols else [])
+    sel_dt  = colf3.selectbox("Date (optional)", ["—"] + dt_cols)
 
+    if sel_dt != "—" and len(df):
+        dmin, dmax = pd.to_datetime(df[sel_dt]).min(), pd.to_datetime(df[sel_dt]).max()
+        drange = colf4.date_input("Date range", (dmin.date(), dmax.date()))
+    else:
+        drange = None
+
+# Apply filters
+df_view = df.copy()
+if sel_dt != "—" and drange:
+    d0, d1 = pd.to_datetime(drange[0]), pd.to_datetime(drange[1])
+    df_view = df_view[(pd.to_datetime(df_view[sel_dt]).dt.date >= d0.date()) &
+                      (pd.to_datetime(df_view[sel_dt]).dt.date <= d1.date())]
+
+if sel_cat != "—":
+    keep_vals = st.multiselect("Keep categories", sorted(df_view[sel_cat].dropna().unique()))
+    if keep_vals:
+        df_view = df_view[df_view[sel_cat].isin(keep_vals)]
+
+# -------- KPIs --------
+rows, cols = df_view.shape
 c1, c2, c3 = st.columns(3)
-c1.metric("Rows", f"{len(df):,}")
-c2.metric("Columns", f"{df.shape[1]}")
-c3.metric(f"Total {kpi_col if kpi_col else ''}".strip(),
-          f"{total_value:,.2f}" if total_value is not None else "—")
+c1.metric("Rows", f"{rows:,}")
+c2.metric("Columns", f"{cols:,}")
+if sel_val:
+    c3.metric(f"Total {sel_val}", f"{df_view[sel_val].sum():,.2f}")
+else:
+    c3.metric("Total", "—")
 
 st.divider()
 
-# Category breakdown
-if cat_cols and num_cols:
-    group_col = st.selectbox("Breakdown by category", cat_cols, index=0)
-    value_col = st.selectbox("Value column", num_cols, index=0)
-    grp = (
-        df.groupby(group_col, dropna=False)[value_col]
-          .sum()
-          .reset_index()
-          .sort_values(value_col, ascending=False)
-          .head(20)
-    )
+# -------- Charts --------
+if sel_cat != "—" and sel_val:
+    grp = (df_view.groupby(sel_cat, dropna=False)[sel_val]
+                  .sum()
+                  .reset_index()
+                  .sort_values(sel_val, ascending=False)
+                  .head(20))
     if HAS_PLOTLY:
-        st.plotly_chart(px.bar(grp, x=group_col, y=value_col), use_container_width=True)
+        fig_bar = px.bar(grp, x=sel_cat, y=sel_val)
+        st.plotly_chart(fig_bar, use_container_width=True)
+        st.download_button("Download chart JSON", fig_bar.to_json().encode(),
+                           "category_chart.json", "application/json")
     else:
-        st.bar_chart(grp.set_index(group_col)[value_col])
+        st.bar_chart(grp.set_index(sel_cat)[sel_val])
 else:
-    st.info("Need at least one numeric and one categorical column for breakdowns.")
+    # Fallback: simple histogram of first numeric
+    if num_cols:
+        if HAS_PLOTLY:
+            st.plotly_chart(px.histogram(df_view, x=num_cols[0]), use_container_width=True)
+        else:
+            st.bar_chart(df_view[num_cols[0]].value_counts().sort_index())
 
-# Time series
-# guess date-like columns by name or dtype
-date_cols = [c for c in df.columns if "date" in c.lower()]
-date_cols += [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
-date_cols = list(dict.fromkeys(date_cols))  # dedupe, keep order
+# Time series (if chosen)
+if sel_dt != "—" and sel_val:
+    ts = (df_view[[sel_dt, sel_val]]
+          .dropna()
+          .assign(**{sel_dt: pd.to_datetime(df_view[sel_dt], errors="coerce")})
+          .dropna()
+          .groupby(sel_dt, as_index=False)[sel_val].sum()
+          .sort_values(sel_dt))
+    if len(ts):
+        if HAS_PLOTLY:
+            st.plotly_chart(px.line(ts, x=sel_dt, y=sel_val), use_container_width=True)
+        else:
+            st.line_chart(ts.set_index(sel_dt)[sel_val])
 
-try:
-    if date_cols:
-        ts_col = st.selectbox("Time column (optional)", date_cols, index=0)
-        df_ts = df[[ts_col] + (num_cols[:1] if num_cols else [])].copy()
-        df_ts[ts_col] = pd.to_datetime(df_ts[ts_col], errors="coerce")
-        df_ts = df_ts.dropna(subset=[ts_col]).sort_values(ts_col)
-        if num_cols:
-            val_ts = st.selectbox("Metric over time", num_cols, index=0)
-            if HAS_PLOTLY:
-                st.plotly_chart(px.line(df_ts, x=ts_col, y=val_ts), use_container_width=True)
-            else:
-                st.line_chart(df_ts.set_index(ts_col)[val_ts])
-    else:
-        st.caption("Tip: add a 'date' column to unlock time-series views.")
-except Exception as e:
-    st.warning(f"Time-series view not available: {e}")
+st.divider()
 
+# -------- Downloads --------
+csv_bytes = df_view.to_csv(index=False).encode()
+st.download_button("Download filtered CSV", csv_bytes, "filtered.csv", "text/csv")
