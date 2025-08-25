@@ -2,23 +2,26 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
-from db import list_uploads_for_user
 from sklearn.linear_model import LinearRegression
+from db import list_uploads_for_user
 
-# Plotly optional
+# --- Plotly optional ---
 try:
     import plotly.express as px
     HAS_PLOTLY = True
 except Exception:
     HAS_PLOTLY = False
 
-# Kaleido (for PNG export) optional
+# --- Kaleido (for PNG export) optional ---
+# Import kaleido explicitly so we truly know if PNG export will work.
 try:
-    import plotly.io as pio  # requires kaleido for static image export
+    import kaleido  # noqa: F401
+    import plotly.io as pio
     from io import BytesIO
     HAS_KALEIDO = True
 except Exception:
     HAS_KALEIDO = False
+    pio = None  # type: ignore
 
 st.set_page_config(page_title="Forecasting • LuminaIQ", page_icon="🔮", layout="wide")
 
@@ -49,21 +52,20 @@ except Exception as e:
     st.stop()
 
 # ---------- Find/create date cols (accept 'Year') ----------
-def find_date_cols(df: pd.DataFrame):
-    name_hits = [c for c in df.columns if any(k in c.lower() for k in ("date", "day", "time", "year"))]
-    dtype_hits = list(df.select_dtypes(include=["datetime", "datetimetz"]).columns)
-    cols = list(dict.fromkeys(name_hits + dtype_hits))
-
+def find_date_cols(df_in: pd.DataFrame):
+    df2 = df_in.copy()
+    name_hits = [c for c in df2.columns if any(k in c.lower() for k in ("date", "day", "time", "year"))]
+    dtype_hits = list(df2.select_dtypes(include=["datetime", "datetimetz"]).columns)
     # If 'Year' exists and is integer-like, synthesize YYYY-01-01
-    for c in cols:
+    for c in name_hits:
         if "year" in c.lower():
             try:
-                y = df[c].astype("Int64").dropna().astype(int)
+                y = df2[c].astype("Int64").dropna().astype(int)
                 if (y.between(1000, 3000)).all():
-                    df["__date_from_year__"] = pd.to_datetime(
-                        df[c].astype(int).astype(str) + "-01-01", errors="coerce"
+                    df2["__date_from_year__"] = pd.to_datetime(
+                        df2[c].astype(int).astype(str) + "-01-01", errors="coerce"
                     )
-                    return df, ["__date_from_year__"]
+                    return df2, ["__date_from_year__"]
             except Exception:
                 pass
 
@@ -71,12 +73,12 @@ def find_date_cols(df: pd.DataFrame):
     for c in name_hits:
         if c not in dtype_hits:
             try:
-                df[c] = pd.to_datetime(df[c], errors="coerce")
+                df2[c] = pd.to_datetime(df2[c], errors="coerce")
             except Exception:
                 pass
 
-    date_like = list(df.select_dtypes(include=["datetime", "datetimetz"]).columns)
-    return df, date_like
+    date_like = list(df2.select_dtypes(include=["datetime", "datetimetz"]).columns)
+    return df2, date_like
 
 df, date_cols = find_date_cols(df)
 num_cols = df.select_dtypes("number").columns.tolist()
@@ -97,7 +99,7 @@ periods = st.slider(
     "Forecast periods",
     7 if freq == "D" else 8,
     max_periods,
-    30 if freq == "D" else 12
+    30 if freq == "D" else 12,
 )
 
 # ---------- Prep ----------
@@ -122,7 +124,7 @@ yhat = model.predict(future_t)
 future_dates = pd.date_range(
     start=df[date_col].iloc[-1] + pd.tseries.frequencies.to_offset(freq),
     periods=periods,
-    freq=freq
+    freq=freq,
 )
 forecast_df = pd.DataFrame({date_col: future_dates, target_col: yhat, "type": "forecast"})
 hist_df = df[[date_col, target_col]].copy()
@@ -148,11 +150,14 @@ with st.expander("Advanced (Backtest)", False):
 
 # ---------- Plot ----------
 if HAS_PLOTLY:
-    fig_ts = px.line(both, x=date_col, y=target_col, color="type", title=f"{target_col} forecast ({freq_name})")
+    fig_ts = px.line(
+        both, x=date_col, y=target_col, color="type",
+        title=f"{target_col} forecast ({freq_name})"
+    )
     st.plotly_chart(fig_ts, use_container_width=True)
 
     # Optional PNG export
-    if HAS_KALEIDO:
+    if HAS_KALEIDO and pio is not None:
         try:
             buf = BytesIO()
             pio.write_image(fig_ts, buf, format="png", scale=2)  # kaleido required
