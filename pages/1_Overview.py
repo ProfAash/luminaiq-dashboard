@@ -71,3 +71,9 @@ else:
     except Exception as e:
         st.warning(f"Could not preview latest dataset: {e}")
 
+from components import kpi
+# ...
+c1, c2, c3 = st.columns(3)
+c1.kpi("Total datasets", f"{len(uploads):,}")
+c2.kpi("Total rows", f"{rows_total:,}")
+c3.kpi("Last upload", uploads[0]["uploaded_at"] if uploads else "—")

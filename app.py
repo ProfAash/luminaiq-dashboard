@@ -17,6 +17,19 @@ st.set_page_config(
 )
 # ---------------------------------------------------------------------
 
+st.markdown("""
+<style>
+/* hide the hamburger & footer */
+#MainMenu {visibility:hidden;}
+footer {visibility:hidden;}
+/* comfy sidebar width */
+section[data-testid="stSidebar"] {width: 290px !important;}
+/* less top padding for the main content */
+.block-container {padding-top: 0.75rem;}
+</style>
+""", unsafe_allow_html=True)
+
+
 # Optional diagnostics (AFTER set_page_config)
 try:
     if importlib.util.find_spec("supabase"):
@@ -67,6 +80,24 @@ def login_form():
                 st.error("Invalid email or password.")
 
 def topbar():
+    with st.sidebar:
+        u = st.session_state.get("user")
+    if u:
+        st.markdown(
+            f"""
+            <div style="
+                padding:14px;border-radius:14px;
+                background:rgba(255,255,255,0.03);
+                border:1px solid rgba(255,255,255,.08);
+                margin-bottom:10px">
+                <div style="font-weight:700">{u.get('name','')}</div>
+                <div style="opacity:.8">{u.get('company','')}</div>
+                <div style="opacity:.6;font-size:.85rem">{u.get('email','')}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
     with st.sidebar:
         st.markdown("### LuminaIQ")
         if st.session_state.user:

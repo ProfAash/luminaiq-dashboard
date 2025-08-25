@@ -1,86 +1,98 @@
 # pages/2_Upload_Data.py
-import os
-import io
+from __future__ import annotations
+import io, os, hashlib
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 from db import insert_upload, list_uploads_for_user
-from storage import upload_bytes
 
-# ✅ MUST be the first Streamlit call
+# Try storage upload (Supabase); if not available we fall back to local
+try:
+    from storage import upload_bytes  # (filename, content: bytes, content_type) -> (path_in_bucket, public_url)
+    HAS_CLOUD = True
+except Exception:
+    HAS_CLOUD = False
+
 st.set_page_config(page_title="Upload Data • LuminaIQ", page_icon="📤", layout="wide")
 
-# (Optional) show a small diagnostic after page_config
-try:
-    import importlib.util, importlib.metadata as md
-    if importlib.util.find_spec("supabase"):
-        st.sidebar.success(f"Supabase present: {md.version('supabase')}")
-    else:
-        st.sidebar.warning("Supabase not detected; uploads will save locally.")
-except Exception as _e:
-    st.sidebar.warning(f"Diag error: {_e}")
-
-# ---------------------------------------------------------------------
-# Auth gate
-# ---------------------------------------------------------------------
+# ---------- auth guard ----------
 user = st.session_state.get("user")
 if not user:
-    st.warning("Please sign in first.")
+    st.warning("Please sign in from the Home page.")
     st.stop()
 
 st.title("📤 Upload Data")
 
-# ---------------------------------------------------------------------
-# Uploader
-# ---------------------------------------------------------------------
+# ---------- helpers ----------
+@st.cache_data(show_spinner=False, ttl=600)
+def _read_csv_bytes(b: bytes) -> pd.DataFrame:
+    return pd.read_csv(io.BytesIO(b))
+
+def _md5_digest(b: bytes) -> str:
+    return hashlib.md5(b).hexdigest()[:8]
+
+# (optional) enforce schema here if needed
+REQUIRED_COLUMNS: list[str] = []   # e.g. ["Year", "Median_Value_ZAR"]
+
+# ---------- uploader ----------
 uploaded = st.file_uploader("Upload a CSV file", type=["csv"], key="csv_uploader")
 
 if uploaded is not None:
     try:
-        # Read file bytes once; reuse them
-        file_bytes = uploaded.getvalue()
+        # read once
+        file_bytes = uploaded.read()
+        df = _read_csv_bytes(file_bytes)
 
-        # Preview
-        df = pd.read_csv(io.BytesIO(file_bytes))
-        st.success(f"Loaded **{uploaded.name}** — {df.shape[0]:,} rows × {df.shape[1]:,} cols")
+        # metadata for user feedback
+        digest = _md5_digest(file_bytes)
+        rows, cols = df.shape
+        st.success(f"Loaded **{uploaded.name}** — {rows:,} rows × {cols:,} cols · id `{digest}`")
         st.dataframe(df.head(10), use_container_width=True)
 
-        # -----------------------------------------------------------------
-        # Try cloud upload via Supabase; fall back to local storage
-        # -----------------------------------------------------------------
-        try:
-            path_in_bucket, public_url = upload_bytes(
-                filename=uploaded.name,
-                content=file_bytes,
-                content_type="text/csv",
-            )
-            save_path_for_db = public_url
-            st.success("✅ Upload saved to cloud storage.")
-        except Exception as e:
-            st.warning(f"Cloud storage unavailable ({e}). Saving locally for now.")
-            os.makedirs("uploads", exist_ok=True)
-            safe_name = uploaded.name.replace(" ", "_")
-            local_path = os.path.join("uploads", safe_name)
-            with open(local_path, "wb") as f:
-                f.write(file_bytes)
-            save_path_for_db = local_path
-            st.info(f"Saved locally: `{local_path}`")
+        # schema guard (optional)
+        missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+        if missing:
+            st.error(f"Missing required columns: {', '.join(missing)}")
+            st.stop()
 
-        # -----------------------------------------------------------------
-        # Record in DB (store the public URL or local path so the app can load it)
-        # -----------------------------------------------------------------
+        # try cloud first
+        save_path_for_db: str
+        if HAS_CLOUD:
+            try:
+                _, public_url = upload_bytes(
+                    filename=uploaded.name,
+                    content=file_bytes,
+                    content_type="text/csv",
+                )
+                save_path_for_db = public_url
+                st.toast("✅ Upload saved to cloud storage", icon="✅")
+            except Exception as e:
+                st.warning(f"Cloud storage unavailable ({e}). Saving locally for now.")
+                os.makedirs("uploads", exist_ok=True)
+                local_path = os.path.join("uploads", uploaded.name.replace(" ", "_"))
+                # Reconstruct CSV bytes to disk
+                pd.read_csv(io.BytesIO(file_bytes)).to_csv(local_path, index=False)
+                save_path_for_db = local_path
+        else:
+            # local fallback
+            os.makedirs("uploads", exist_ok=True)
+            local_path = os.path.join("uploads", uploaded.name.replace(" ", "_"))
+            pd.read_csv(io.BytesIO(file_bytes)).to_csv(local_path, index=False)
+            save_path_for_db = local_path
+            st.info("Saving locally (cloud storage not configured).")
+
+        # record in DB (path will be public URL or local path as above)
         insert_upload(
             user_id=user["id"],
             filename=uploaded.name,
             path=save_path_for_db,
             uploaded_at=datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            rows=int(df.shape[0]),
-            cols=int(df.shape[1]),
+            rows=int(rows),
+            cols=int(cols),
         )
-
-        st.toast("Upload recorded", icon="✅")
+        st.toast("Upload recorded", icon="📦")
 
     except Exception as e:
         st.error(f"Failed to process file: {e}")
@@ -88,15 +100,11 @@ if uploaded is not None:
 st.divider()
 st.subheader("Your uploads")
 
-records = list_uploads_for_user(user["id"])
-# SQLite row objects -> dicts for DataFrame
-try:
-    df_up = pd.DataFrame([dict(r) for r in records]) if records else pd.DataFrame()
-except Exception:
-    df_up = pd.DataFrame(records)  # fallback if they're already dict-like
-
-if df_up.empty:
+records = list_uploads_for_user(user_id=user["id"])
+if not records:
     st.info("No uploads yet.")
 else:
-    cols = [c for c in ["filename", "uploaded_at", "rows", "cols"] if c in df_up.columns]
-    st.dataframe(df_up[cols], use_container_width=True)
+    # show common columns if present
+    df_up = pd.DataFrame(records)
+    keep_cols = [c for c in ["filename", "uploaded_at", "rows", "cols", "path"] if c in df_up.columns]
+    st.dataframe(df_up[keep_cols], use_container_width=True)

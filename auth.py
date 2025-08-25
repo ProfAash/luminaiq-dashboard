@@ -6,7 +6,11 @@ import db
 _ITERATIONS = 200_000
 _ALGO = "pbkdf2_sha256"
 
-def _hash_password(password: str, salt: bytes | None = None) -> str:
+from typing import Optional
+
+def _hash_password(password: str, salt: Optional[bytes] = None) -> str:
+    ...
+
     if salt is None:
         salt = os.urandom(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ITERATIONS)

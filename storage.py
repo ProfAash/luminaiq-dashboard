@@ -18,7 +18,7 @@ def _check_config() -> None:
 
 def _import_supabase():
     try:
-        from supabase import create_client, Client  # type: ignore
+        from supabase import create_client, Client 
         return create_client, Client
     except Exception as e:
         # Show the true import error
