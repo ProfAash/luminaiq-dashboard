@@ -26,6 +26,31 @@ except Exception:
 
 st.set_page_config(page_title="Dashboards • LuminaIQ", page_icon="📊", layout="wide")
 
+# --- Query params compatibility shim ---
+def _get_qp():
+    """Return plain dict; handles legacy experimental API that returns list values."""
+    if hasattr(st, "query_params"):
+        qp = dict(st.query_params)
+    elif hasattr(st, "experimental_get_query_params"):
+        qp = st.experimental_get_query_params()
+    else:
+        qp = {}
+    # Normalize list values -> first scalar
+    norm = {}
+    for k, v in qp.items():
+        if isinstance(v, (list, tuple)):
+            norm[k] = v[0] if v else None
+        else:
+            norm[k] = v
+    return norm
+
+def _set_qp(mapping: dict):
+    if hasattr(st, "query_params"):
+        st.query_params.update(mapping)
+    elif hasattr(st, "experimental_set_query_params"):
+        st.experimental_set_query_params(**mapping)
+# ---------------------------------------
+
 # ---------- Auth ----------
 user = st.session_state.get("user")
 if not user:
@@ -43,19 +68,29 @@ if not uploads:
 options = {f"{u['uploaded_at']} — {u['filename']}": u for u in uploads}
 
 # Deep-link support via query params
-qp = st.query_params
-if "dataset" in qp and qp["dataset"] in options:
-    default_dataset = qp["dataset"]
-else:
-    default_dataset = list(options.keys())[0]
+qp = _get_qp()
+qp_ds = qp.get("dataset")
+default_dataset = qp_ds if (qp_ds in options) else list(options.keys())[0]
 
-choice = st.selectbox("Choose a dataset", list(options.keys()), key="dash_dataset", index=list(options.keys()).index(default_dataset))
-ds = options[choice]
+choice = st.selectbox(
+    "Choose a dataset",
+    list(options.keys()),
+    key="dash_dataset",
+    index=list(options.keys()).index(default_dataset),
+)
+# keep qs current
+_set_qp({"dataset": choice})
+
+ds = options[choice]  # <- FIX: define ds from selection
 
 # ---------- Load data (URL or local path) ----------
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_csv(path: str) -> pd.DataFrame:
+    return pd.read_csv(path)
+
 path = ds.get("path", "")
 try:
-    df = pd.read_csv(path)
+    df = _load_csv(path)
 except Exception as e:
     st.error(f"Could not read dataset: {e}")
     st.stop()
@@ -72,30 +107,45 @@ num_cols = df.select_dtypes("number").columns.tolist()
 cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 dt_cols  = df.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
 
+if not num_cols:
+    st.info("No numeric columns detected — some charts and KPIs may be limited.")
+
 # ---------- Filters ----------
+MAX_CAT_OPTIONS = 500  # guard against huge pickers
+
 with st.expander("Filters", True):
     colf1, colf2, colf3, colf4 = st.columns(4)
     sel_cat = colf1.selectbox("Category (optional)", ["—"] + cat_cols, key="dash_cat")
     sel_val = colf2.selectbox("Value (numeric)", num_cols if num_cols else [], key="dash_val")
     sel_dt  = colf3.selectbox("Date (optional)", ["—"] + dt_cols, key="dash_dt")
 
+    # Safer date-range: handle NaT/mixed/empty gracefully
     if sel_dt != "—" and len(df):
-        dmin, dmax = pd.to_datetime(df[sel_dt]).min(), pd.to_datetime(df[sel_dt]).max()
-        drange = colf4.date_input("Date range", (dmin.date(), dmax.date()), key="dash_drange")
+        s = pd.to_datetime(df[sel_dt], errors="coerce")
+        if s.notna().any():
+            dmin, dmax = s.min().date(), s.max().date()
+            drange = colf4.date_input("Date range", (dmin, dmax), key="dash_drange")
+        else:
+            st.caption("Selected date column has no valid dates.")
+            drange = None
     else:
         drange = None
 
-    # Searchable category values
+    # Searchable category values (with cardinality guard)
     cat_query = ""
     keep_vals = []
     if sel_cat != "—":
+        all_vals = sorted(v for v in df[sel_cat].dropna().astype(str).unique())
+        if len(all_vals) > MAX_CAT_OPTIONS:
+            st.warning(f"{sel_cat} has {len(all_vals):,} unique values; showing first {MAX_CAT_OPTIONS}. Use search to narrow.")
+            all_vals = all_vals[:MAX_CAT_OPTIONS]
+
         cat_query = st.text_input(
             f"Search {sel_cat} values",
             value=st.session_state.get("dash_cat_query", ""),
             key="dash_cat_query",
             placeholder="Type to filter category values…",
         )
-        all_vals = sorted(v for v in df[sel_cat].dropna().astype(str).unique())
         if cat_query:
             q = cat_query.lower()
             all_vals = [v for v in all_vals if q in v.lower()]
@@ -114,8 +164,8 @@ with st.expander("Filters", True):
     num_range = None
     if sel_val:
         series_numeric = pd.to_numeric(df[sel_val], errors="coerce")
-        col_min = float(series_numeric.min())
-        col_max = float(series_numeric.max())
+        col_min = float(series_numeric.min()) if series_numeric.notna().any() else 0.0
+        col_max = float(series_numeric.max()) if series_numeric.notna().any() else 0.0
         num_range = st.slider(
             f"{sel_val} range",
             min_value=float(col_min),
@@ -179,11 +229,11 @@ if sel_cat != "—" and sel_val:
         st.bar_chart(grp.set_index(sel_cat)[sel_val])
 else:
     # Fallback: simple histogram of first numeric
-    if num_cols and HAS_PLOTLY:
+    if HAS_PLOTLY and len(num_cols) > 0:
         first_num = num_cols[0]
         bar_fig = px.histogram(df_view, x=first_num, title=f"Distribution of {first_num}")
         st.plotly_chart(bar_fig, use_container_width=True)
-    elif num_cols:
+    elif len(num_cols) > 0:
         st.bar_chart(df_view[num_cols[0]].value_counts().sort_index())
 
 # Time series
@@ -191,8 +241,10 @@ if sel_dt != "—" and sel_val:
     ts = (
         df_view[[sel_dt, sel_val]]
         .dropna()
-        .assign(**{sel_dt: pd.to_datetime(df_view[sel_dt], errors="coerce"),
-                   sel_val: pd.to_numeric(df_view[sel_val], errors="coerce")})
+        .assign(**{
+            sel_dt: pd.to_datetime(df_view[sel_dt], errors="coerce"),
+            sel_val: pd.to_numeric(df_view[sel_val], errors="coerce")
+        })
         .dropna()
         .groupby(sel_dt, as_index=False)[sel_val].sum()
         .sort_values(sel_dt)
@@ -206,6 +258,20 @@ if sel_dt != "—" and sel_val:
 
 st.divider()
 
+# ---------- Debug (optional) ----------
+with st.expander("Debug", False):
+    st.write({
+        "dataset": choice,
+        "sel_cat": sel_cat,
+        "sel_val": sel_val,
+        "sel_dt": sel_dt,
+        "drange": st.session_state.get("dash_drange"),
+        "keep_vals": st.session_state.get("dash_keep_vals"),
+        "val_range": st.session_state.get("dash_val_range"),
+        "df_shape": df.shape,
+        "df_view_shape": df_view.shape,
+    })
+
 # ---------- 6) Saved Views ----------
 st.subheader("Saved views")
 
@@ -215,21 +281,25 @@ view_payload = {
     "sel_cat": sel_cat,
     "sel_val": sel_val,
     "sel_dt": sel_dt,
-    "drange": [str(d) for d in st.session_state.get("dash_drange", [])] if sel_dt != "—" and st.session_state.get("dash_drange") else None,
+    "drange": [str(d) for d in st.session_state.get("dash_drange", [])]
+              if sel_dt != "—" and st.session_state.get("dash_drange") else None,
     "keep_vals": st.session_state.get("dash_keep_vals", []),
     "cat_query": st.session_state.get("dash_cat_query", ""),
     "num_range": st.session_state.get("dash_val_range", None),
 }
 
 # Buttons row
-csa, csb, csc = st.columns([2,2,3])
+csa, csb, csc = st.columns([2, 2, 3])
 
 with csa:
     new_name = st.text_input("View name", placeholder="e.g., Q1 · Region=Gauteng · Sales", key="dash_view_name")
     if st.button("Save view", type="primary", use_container_width=True):
         try:
-            save_view(user_id=user["id"], page="dashboard", name=new_name.strip(), payload_json=json.dumps(view_payload))
-            st.success(f"Saved view “{new_name}”.")
+            if not new_name or not new_name.strip():
+                st.warning("Please enter a view name.")
+            else:
+                save_view(user_id=user["id"], page="dashboard", name=new_name.strip(), payload_json=json.dumps(view_payload))
+                st.success(f"Saved view “{new_name.strip()}”.")
         except Exception as e:
             st.error(f"Could not save view: {e}")
 
@@ -247,7 +317,6 @@ with csb:
         st.session_state["dash_val"] = payload.get("sel_val", "")
         st.session_state["dash_dt"] = payload.get("sel_dt", "—")
         if payload.get("drange"):
-            from datetime import date
             try:
                 d0 = pd.to_datetime(payload["drange"][0]).date()
                 d1 = pd.to_datetime(payload["drange"][1]).date()
@@ -260,7 +329,7 @@ with csb:
             st.session_state["dash_val_range"] = tuple(payload["num_range"])
 
         # Update query params for deep link
-        qp.update({"dataset": st.session_state["dash_dataset"]})
+        _set_qp({"dataset": st.session_state["dash_dataset"]})
         st.rerun()
 
 with csc:
@@ -278,8 +347,7 @@ dl_json = json.dumps(view_payload, indent=2).encode()
 st.download_button("Download view JSON", dl_json, "dashboard_view.json", "application/json")
 
 # Also reflect current dataset in query params for sharable link
-qp.update({"dataset": choice})
-
+_set_qp({"dataset": choice})
 st.caption("Tip: copy the URL from your browser after setting filters — it includes the selected dataset. Saved views restore all filters, not just dataset.")
 
 st.divider()
