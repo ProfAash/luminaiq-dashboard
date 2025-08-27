@@ -4,6 +4,13 @@ import uuid
 from html import escape
 import streamlit as st
 
+def kpi(label: str, value: str, delta: str | None = None) -> None:
+    """
+    Thin wrapper around st.metric so pages can `from components import kpi`.
+    """
+    st.metric(label, value, delta)
+
+
 # ==============================
 # base helpers & styles (same as before; keep or replace your previous block)
 # ==============================

@@ -1,84 +1,137 @@
-import os, sqlite3
+# db.py
+import os
+import sqlite3
+from contextlib import contextmanager
+from typing import List, Dict, Any
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "luminaiq.db")
+DB_PATH = os.getenv("LUMINAIQ_DB_PATH", "luminaiq.db")
 
+
+@contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.row_factory = sqlite3.Row
+        yield conn
+    finally:
+        conn.close()
 
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        name TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'client',
-        company TEXT DEFAULT ''
-    )''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS uploads (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        filename TEXT NOT NULL,
-        path TEXT NOT NULL,
-        uploaded_at TEXT NOT NULL,
-        rows INTEGER DEFAULT 0,
-        cols INTEGER DEFAULT 0,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )''')
-    conn.commit()
-    return conn
 
-# --- helpers ---
-def _row_to_dict(row):
-    return dict(row) if row is not None else None
+def init_db() -> None:
+    """Create required tables if they don't exist."""
+    with get_conn() as conn:
+        cur = conn.cursor()
 
-def _rows_to_dicts(cursor, rows):
-    # Use cursor.description so column order/names are guaranteed
-    cols = [c[0] for c in cursor.description]
-    return [dict(zip(cols, r)) for r in rows]
+        # Basic uploads table
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                path TEXT NOT NULL,
+                uploaded_at TEXT NOT NULL,
+                rows INTEGER DEFAULT 0,
+                cols INTEGER DEFAULT 0
+            )
+            """
+        )
 
-def get_user_by_email(email: str):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE email = ?", (email.lower(),))
-    row = cur.fetchone()
-    return _row_to_dict(row)
+        # Saved views for pages (dashboard, etc.)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS saved_views (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                page TEXT NOT NULL,
+                name TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                UNIQUE(user_id, page, name)
+            )
+            """
+        )
 
-def insert_user(email: str, name: str, password_hash: str, role: str = "client", company: str = "") -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO users (email, name, password_hash, role, company) VALUES (?, ?, ?, ?, ?)",
-        (email.lower(), name, password_hash, role, company)
-    )
-    conn.commit()
-    return cur.lastrowid
+        conn.commit()
 
-def list_uploads_for_user(user_id: int):
-    conn = get_conn()
-    cur = conn.cursor()
-    # Select explicit columns and stable names
-    cur.execute(
-        """
-        SELECT filename, uploaded_at, rows, cols, id, user_id, path
-        FROM uploads
-        WHERE user_id = ?
-        ORDER BY uploaded_at DESC
-        """,
-        (user_id,),
-    )
-    rows = cur.fetchall()
-    return _rows_to_dicts(cur, rows)
 
-def insert_upload(user_id: int, filename: str, path: str, uploaded_at: str, rows: int, cols: int) -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO uploads (user_id, filename, path, uploaded_at, rows, cols) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, filename, path, uploaded_at, rows, cols),
-    )
-    conn.commit()
-    return cur.lastrowid
+# ---------- Uploads ----------
+
+def insert_upload(
+    user_id: str,
+    filename: str,
+    path: str,
+    uploaded_at: str,
+    rows: int,
+    cols: int,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO uploads (user_id, filename, path, uploaded_at, rows, cols)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, filename, path, uploaded_at, rows, cols),
+        )
+        conn.commit()
+
+
+def list_uploads_for_user(user_id: str) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, filename, path, uploaded_at, rows, cols
+            FROM uploads
+            WHERE user_id = ?
+            ORDER BY uploaded_at DESC, id DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- Saved Views ----------
+
+def save_view(user_id: str, page: str, name: str, payload_json: str) -> None:
+    """
+    Upsert a saved view by (user_id, page, name).
+    """
+    if not name:
+        raise ValueError("View name cannot be empty.")
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO saved_views (user_id, page, name, payload_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, page, name) DO UPDATE SET
+              payload_json = excluded.payload_json
+            """,
+            (user_id, page, name, payload_json),
+        )
+        conn.commit()
+
+
+def list_views(user_id: str, page: str) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT name, payload_json as payload
+            FROM saved_views
+            WHERE user_id = ? AND page = ?
+            ORDER BY name COLLATE NOCASE
+            """,
+            (user_id, page),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_view(user_id: str, page: str, name: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            DELETE FROM saved_views
+            WHERE user_id = ? AND page = ? AND name = ?
+            """,
+            (user_id, page, name),
+        )
+        conn.commit()
